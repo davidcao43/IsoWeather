@@ -1,0 +1,5 @@
+{
+  "name": "IsoWeather GenAI",
+  "description": "A generative weather application that creates unique 3D isometric miniature scenes based on real-time weather conditions using Gemini 2.5 Flash Image.",
+  "requestFramePermissions": []
+}
