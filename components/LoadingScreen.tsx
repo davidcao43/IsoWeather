@@ -42,7 +42,7 @@ export const LoadingScreen: React.FC<LoadingScreenProps> = ({ message }) => {
   }, []);
 
   return (
-    <div className="absolute inset-0 z-[100] flex flex-col items-center justify-center bg-zinc-950/95 backdrop-blur-2xl p-6 animate-in fade-in duration-500 overflow-hidden">
+    <div className="absolute inset-0 z-[1000] flex flex-col items-center justify-center bg-zinc-950/95 backdrop-blur-2xl p-6 animate-in fade-in duration-500 overflow-hidden">
       
       {/* Background Grid - Holographic Effect */}
       <div 

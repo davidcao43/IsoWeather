@@ -8,7 +8,7 @@ import { FantasyCreator } from './components/FantasyCreator';
 import { generateWeatherScene, getCityNativeName, generateHomeBackground, generateFantasyScene, generateCreativeWeatherData, regenerateFantasyScene } from './services/geminiService';
 import { getWeatherData } from './services/weatherService';
 import { AppState, WeatherCardData, LocationData, FantasyConfig, ViewConfig, GeneratedImage } from './types';
-import { AlertCircle, Layers, Sparkles, Wand2 } from 'lucide-react';
+import { AlertCircle, Sparkles, Wand2, X } from 'lucide-react';
 
 const SWIPE_THRESHOLD = 100;
 const DRAG_THRESHOLD = 5; // Pixels to move before considering it a drag
@@ -35,7 +35,7 @@ const App: React.FC = () => {
   const [previewDragOffset, setPreviewDragOffset] = useState(0); // Track drag to animate search bar
   const [expandedCardId, setExpandedCardId] = useState<string | null>(null);
   const [refreshingCardId, setRefreshingCardId] = useState<string | null>(null);
-  // Remove unused showEdit
+  
   const [showFantasy, setShowFantasy] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string>("");
   const [isScrolled, setIsScrolled] = useState(false);
@@ -169,7 +169,7 @@ const App: React.FC = () => {
     return {
         // VERTICAL CENTERING: 
         // top: 50% puts the top edge in the middle.
-        // translateY(-50%) shifts it up by half its height, centering it perfectly.
+        // translateY(-50%) shifts it up by half its height, centering it perfectly relative to the parent content box.
         top: '50%',
         transform: `translate3d(${x}px, -50%, 0) scale(${scale})`,
         zIndex,
@@ -287,6 +287,18 @@ const App: React.FC = () => {
     }
   };
 
+  const handleRemoveCard = (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    setSavedCards(prev => {
+        const newCards = prev.filter(c => c.weather.id !== id);
+        if (newCards.length === 0) {
+            setState(AppState.IDLE);
+            setActiveIndex(0);
+        }
+        return newCards;
+    });
+  };
+
   const handleImageUpdate = (newImage: GeneratedImage) => {
       let targetCard = previewCard;
       if (!targetCard && expandedCardId) {
@@ -330,6 +342,8 @@ const App: React.FC = () => {
           setActiveIndex(savedCards.length); 
           setPreviewCard(null);
           setPreviewDragOffset(0);
+          setIsScrolled(false); // Reset scroll state
+          setState(AppState.IDLE); // Reset state to IDLE on save to normalize UI
       }
   };
 
@@ -343,6 +357,9 @@ const App: React.FC = () => {
       opacity: searchBarProgress,
       pointerEvents: searchBarProgress > 0.8 ? 'auto' : 'none'
   } as React.CSSProperties : {};
+
+  // Determine if we are in "Welcome" state
+  const isWelcome = state === AppState.IDLE && savedCards.length === 0;
 
   return (
     <main className="relative w-full h-full bg-zinc-950 flex flex-col overflow-hidden select-none text-zinc-50">
@@ -382,22 +399,31 @@ const App: React.FC = () => {
 
       {/* Search & Header */}
       {/* 
-         Z-Index 60 to stay above the 3D stack.
-         We hide it if a previewCard is present, unless dragging reveals it.
+         Fixed positioning to ensure it stays anchored on screen regardless of Safari UI.
+         Z-Index 500 to stay well above the 3D stack.
+         top-8 to move higher (requested by user).
       */}
       <div 
-        className={`w-full z-[60] pt-4 px-4 pb-0 transition-all duration-500 ease-in-out flex items-center justify-center flex-shrink-0 gap-2
-          ${(state === AppState.IDLE && savedCards.length === 0) ? 'absolute top-[40%] translate-y-[-50%] flex-col items-center' : ''}
-          ${expandedCardId ? 'translate-y-[-120%]' : ''} 
-          ${!previewCard ? 'translate-y-0 opacity-100' : ''}
+        className={`fixed left-0 right-0 z-[500] flex items-center justify-center gap-2 px-4 pointer-events-none transform-gpu transition-all duration-700 ease-[cubic-bezier(0.32,0.72,0,1)]
+          ${isWelcome 
+            ? 'top-[40%] -translate-y-1/2 flex-col' 
+            : 'top-8' 
+          }
+          ${expandedCardId 
+            ? '-translate-y-[150%] opacity-0' 
+            : isWelcome
+                ? '' // Welcome state handles its own positioning
+                : previewCard 
+                    ? '' // Preview handles positioning via inline style
+                    : 'translate-y-0 opacity-100' // Stack view default
+          }
         `}
         style={searchBarStyle}
       >
-        {state === AppState.IDLE && savedCards.length === 0 && (
-          <div className="text-center mb-8 animate-in fade-in zoom-in duration-700">
+        {isWelcome && (
+          <div className="text-center mb-8 animate-in fade-in zoom-in duration-700 pointer-events-auto">
             <h1 className="text-6xl font-black text-transparent bg-clip-text bg-gradient-to-r from-white to-zinc-500 tracking-tighter mb-3 drop-shadow-sm flex items-center justify-center gap-4">
                 IsoWeather
-                {/* Visual indicator that AI is active */}
                 <div className="relative group animate-pulse">
                     <Sparkles className="w-8 h-8 text-blue-400" />
                 </div>
@@ -405,12 +431,12 @@ const App: React.FC = () => {
           </div>
         )}
         
-        {/* Container for Search and Magic Button */}
-        <div className={`flex items-center gap-2 w-full max-w-md ${state === AppState.IDLE && savedCards.length === 0 ? 'w-full' : ''}`}>
+        {/* Search Container - Pointer events auto enabled for interaction */}
+        <div className={`flex items-center gap-2 w-full max-w-md pointer-events-auto ${isWelcome ? 'w-full' : ''}`}>
             <SearchInput 
                 onSearch={handleSearch} 
                 disabled={state !== AppState.IDLE && state !== AppState.SUCCESS}
-                minimized={(state !== AppState.IDLE || savedCards.length > 0) && isScrolled && !!previewCard}
+                minimized={(!isWelcome) && isScrolled && !!previewCard}
             />
             
             {/* Create Fantasy World Button */}
@@ -425,19 +451,12 @@ const App: React.FC = () => {
                 </button>
             )}
         </div>
-
-        {savedCards.length > 0 && !expandedCardId && !previewCard && state === AppState.IDLE && (
-            <div className="absolute top-[4.5rem] right-6 animate-in fade-in duration-500">
-                <div className="bg-zinc-800/80 backdrop-blur-sm pl-2 pr-3 py-1.5 rounded-full shadow-sm border border-zinc-700 flex items-center gap-1.5 text-xs font-semibold text-zinc-300">
-                    <Layers className="w-3.5 h-3.5 text-blue-500" />
-                    <span>{savedCards.length}</span>
-                </div>
-            </div>
-        )}
+        {/* Card indicator removed here */}
       </div>
 
       {/* Main Content / Stack Container */}
-      <div className="flex-1 relative z-10 w-full flex items-center justify-center">
+      {/* pt-24 (96px) ensures stack is centered properly given the top-8 search bar */}
+      <div className="flex-1 relative z-10 w-full flex items-center justify-center pt-24 pb-4">
         
         {state === AppState.ERROR && (
           <div className="absolute inset-0 flex flex-col items-center justify-center z-50 bg-zinc-900/80 backdrop-blur px-4 text-center">
@@ -486,7 +505,7 @@ const App: React.FC = () => {
                             style={style}
                         >
                              <div 
-                                className={`w-full h-full relative rounded-[2.5rem] border border-white/10 shadow-[0_25px_50px_-12px_rgba(0,0,0,0.5)] overflow-hidden ${isCenter ? 'cursor-pointer' : ''}`}
+                                className={`w-full h-full relative rounded-[2.5rem] border border-white/10 shadow-[0_25px_50px_-12px_rgba(0,0,0,0.5)] overflow-hidden group ${isCenter ? 'cursor-pointer' : ''}`}
                                 onClick={() => {
                                     // Robust Click Handling:
                                     // Only trigger if we haven't dragged significantly.
@@ -507,6 +526,17 @@ const App: React.FC = () => {
                                     isPreview={false}
                                  />
                                  
+                                 {/* Remove Button */}
+                                 {isCenter && (
+                                     <button 
+                                        onClick={(e) => handleRemoveCard(e, cardData.weather.id)}
+                                        className="absolute top-5 right-5 z-50 p-2.5 bg-black/40 hover:bg-red-500 text-white rounded-full backdrop-blur-md border border-white/10 transition-all hover:scale-110 active:scale-95 shadow-lg group-hover:opacity-100 md:opacity-0 md:group-hover:opacity-100 opacity-100"
+                                        title="Remove card"
+                                     >
+                                         <X className="w-5 h-5" />
+                                     </button>
+                                 )}
+
                                  {/* Darken non-center cards */}
                                  {!isCenter && (
                                     <div className="absolute inset-0 bg-black/40 rounded-[2.5rem] pointer-events-none transition-opacity duration-300" />
@@ -529,7 +559,10 @@ const App: React.FC = () => {
                    image={expandedCard.image} 
                    loading={refreshingCardId === expandedCard.weather.id}
                    isExpanded={true}
-                   onToggleExpand={() => setExpandedCardId(null)}
+                   onToggleExpand={() => {
+                        setExpandedCardId(null);
+                        setIsScrolled(false); // Reset scroll state when closing
+                   }}
                    onUpdateImage={handleImageUpdate}
                    onRefresh={() => handleRefresh(expandedCard)}
                    onScroll={setIsScrolled}
@@ -548,7 +581,11 @@ const App: React.FC = () => {
                   image={previewCard.image} 
                   loading={state === AppState.EDITING_IMAGE || refreshingCardId === previewCard.weather.id}
                   isExpanded={true}
-                  onToggleExpand={() => { setPreviewCard(null); setPreviewDragOffset(0); }}
+                  onToggleExpand={() => { 
+                      setPreviewCard(null); 
+                      setPreviewDragOffset(0); 
+                      setIsScrolled(false); // Reset scroll state when canceling
+                  }}
                   onScroll={setIsScrolled}
                   onRefresh={() => handleRefresh(previewCard)}
                   onUpdateImage={handleImageUpdate}

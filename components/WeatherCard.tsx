@@ -498,7 +498,7 @@ export const WeatherCard: React.FC<WeatherCardProps> = ({
     document.body.removeChild(link);
   };
 
-  const handleCloseFullImage = () => {
+  const handleSaveFullImage = () => {
     // 1. Commit View Config (Pan/Zoom)
     if (onUpdateView && currentViewConfig) {
         onUpdateView(currentViewConfig);
@@ -511,6 +511,12 @@ export const WeatherCard: React.FC<WeatherCardProps> = ({
 
     setShowFullImage(false);
     setShowAdjustInput(false);
+  };
+
+  const handleCancelFullImage = () => {
+      // Discard changes and close
+      setShowFullImage(false);
+      setShowAdjustInput(false);
   };
 
   const handleSubmitAdjust = async () => {
@@ -899,12 +905,20 @@ export const WeatherCard: React.FC<WeatherCardProps> = ({
             // Ensure clicking background DOES NOT close the view. Only Save closes it.
         >
             <button 
-                className="absolute top-6 right-6 px-6 py-3 bg-zinc-100 hover:bg-white text-black rounded-full font-bold transition-all z-50 shadow-[0_0_20px_rgba(255,255,255,0.2)] flex items-center gap-2 hover:scale-105 active:scale-95"
-                onClick={(e) => { e.stopPropagation(); handleCloseFullImage(); }}
+                className="absolute top-6 left-6 px-6 py-3 bg-zinc-100 hover:bg-white text-black rounded-full font-bold transition-all z-50 shadow-[0_0_20px_rgba(255,255,255,0.2)] flex items-center gap-2 hover:scale-105 active:scale-95"
+                onClick={(e) => { e.stopPropagation(); handleSaveFullImage(); }}
                 title="Save & Close"
             >
                 <Check className="w-5 h-5" />
                 <span>Save</span>
+            </button>
+
+            <button 
+                className="absolute top-6 right-6 p-3 bg-zinc-900/50 hover:bg-zinc-800 text-white rounded-full transition-all z-50 backdrop-blur-md border border-white/10 flex items-center justify-center hover:scale-105 active:scale-95 group"
+                onClick={(e) => { e.stopPropagation(); handleCancelFullImage(); }}
+                title="Discard Changes"
+            >
+                <X className="w-6 h-6 text-zinc-400 group-hover:text-white" />
             </button>
             
             {/* Interactive Pan/Zoom Image with updated multi-touch support */}

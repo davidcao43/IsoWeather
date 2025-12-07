@@ -82,7 +82,7 @@ export const SearchInput: React.FC<SearchInputProps> = ({ onSearch, disabled, mi
   return (
     <div 
       ref={wrapperRef}
-      className={`relative mx-auto z-50 transition-all duration-500 ease-spring ${
+      className={`relative mx-auto z-50 transition-all duration-500 ease-spring transform-gpu ${
         minimized 
           ? 'w-12 hover:w-full max-w-sm' 
           : 'w-full max-w-md'
