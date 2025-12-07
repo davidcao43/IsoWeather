@@ -1,20 +1,22 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { WeatherData, GeneratedImage, HourlyForecast, NewsItem, ViewConfig } from '../types';
+import { WeatherData, GeneratedImage, HourlyForecast, NewsItem, ViewConfig, DailyForecast } from '../types';
 import { 
     RefreshCw, Wind, Droplets, Thermometer, ArrowDown, CloudRain, Sun, Activity, 
     Cloud, CloudLightning, CloudSnow, CloudFog, Eye, Gauge, 
     Sunrise, Sunset, Umbrella, X, Download, Sparkles, ArrowLeft, ArrowRight, Plus,
-    Info, TrendingUp, CloudDrizzle, Calendar, Navigation, Globe, Brain, Zap, FlaskConical, Newspaper, Minimize, Maximize, Crop
+    Info, TrendingUp, CloudDrizzle, Calendar, Navigation, Globe, Brain, Zap, FlaskConical, Newspaper, Wand2, Loader2, Check, ChevronLeft, ChevronRight
 } from 'lucide-react';
 import { AreaChart, BarChart, SunCycle } from './DetailCharts';
+import { editWeatherScene } from '../services/geminiService';
+import { mapWmoCode } from '../services/weatherService';
 
 interface WeatherCardProps {
   weather: WeatherData;
   image: GeneratedImage;
   loading?: boolean;
   onScroll?: (isScrolled: boolean) => void;
-  onEdit?: () => void;
+  onUpdateImage?: (newImage: GeneratedImage) => void;
   onRefresh?: () => void;
   isExpanded?: boolean;
   onToggleExpand?: () => void;
@@ -25,75 +27,164 @@ interface WeatherCardProps {
   onUpdateView?: (viewConfig: ViewConfig) => void;
 }
 
-// Internal Component for Pan/Zoom Image Viewing
+// Internal Component for Pan/Zoom Image Viewing with Multi-Touch Support
 const PanZoomImage: React.FC<{ 
     src: string, 
     alt: string, 
     initialConfig?: ViewConfig,
     onTransformChange?: (config: ViewConfig) => void 
 }> = ({ src, alt, initialConfig, onTransformChange }) => {
+    // Initialize state only once from props to avoid resetting during parent renders,
+    // unless initialConfig changes externally significantly (which we handle in useEffect below if needed)
     const [transform, setTransform] = useState<ViewConfig>(initialConfig || { x: 0, y: 0, scale: 1 });
     const containerRef = useRef<HTMLDivElement>(null);
-    const isDragging = useRef(false);
-    const startPos = useRef({ x: 0, y: 0 });
+    const [isDragging, setIsDragging] = useState(false);
+    
+    // Interaction State for Multi-touch/Pinch
+    const pointers = useRef<Map<number, {x: number, y: number}>>(new Map());
+    const interactionStart = useRef<{
+        scale: number;
+        x: number;
+        y: number;
+        dist: number;
+        center: {x: number, y: number};
+    }>({ scale: 1, x: 0, y: 0, dist: 0, center: {x: 0, y: 0} });
 
-    const handleWheel = (e: React.WheelEvent<HTMLDivElement>) => {
-        e.stopPropagation();
-        const scaleAmount = -(e.deltaY as number) * 0.001;
-        const newScale = Math.min(Math.max(1, transform.scale + scaleAmount), 4);
-        
-        let newConfig;
-        if (newScale === 1) {
-            newConfig = { x: 0, y: 0, scale: 1 };
-        } else {
-            newConfig = { ...transform, scale: newScale };
+    // Sync if initialConfig updates (e.g. from parent state change)
+    useEffect(() => {
+        if (initialConfig) {
+             setTransform(prev => {
+                 // Only update if significantly different to prevent jitter
+                 if (Math.abs(prev.x - initialConfig.x) > 1 || Math.abs(prev.y - initialConfig.y) > 1 || Math.abs(prev.scale - initialConfig.scale) > 0.01) {
+                     return initialConfig;
+                 }
+                 return prev;
+             });
         }
+    }, [initialConfig]);
+
+    const getMetrics = (currentPointers: {x: number, y: number}[]) => {
+        if (currentPointers.length === 0) return { center: {x:0, y:0}, dist: 0 };
+        if (currentPointers.length === 1) return { center: currentPointers[0], dist: 0 };
         
-        setTransform(newConfig);
-        if (onTransformChange) onTransformChange(newConfig);
+        const p1 = currentPointers[0];
+        const p2 = currentPointers[1];
+        const center = { x: (p1.x + p2.x)/2, y: (p1.y + p2.y)/2 };
+        const dist = Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2));
+        return { center, dist };
     };
 
     const handlePointerDown = (e: React.PointerEvent) => {
         e.preventDefault();
-        isDragging.current = true;
-        startPos.current = { x: e.clientX - transform.x, y: e.clientY - transform.y };
-        e.currentTarget.setPointerCapture(e.pointerId);
+        e.stopPropagation();
+        if (containerRef.current) containerRef.current.setPointerCapture(e.pointerId);
+        
+        pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        setIsDragging(true);
+        
+        // Recalculate interaction baseline
+        const pointList = Array.from(pointers.current.values()) as {x: number, y: number}[];
+        const { center, dist } = getMetrics(pointList);
+        
+        interactionStart.current = {
+            scale: transform.scale,
+            x: transform.x,
+            y: transform.y,
+            dist: dist,
+            center: center
+        };
     };
 
     const handlePointerMove = (e: React.PointerEvent) => {
-        if (!isDragging.current) return;
+        if (!pointers.current.has(e.pointerId)) return;
         e.preventDefault();
-        
-        let newX = e.clientX - startPos.current.x;
-        let newY = e.clientY - startPos.current.y;
+        e.stopPropagation();
 
-        // Boundaries check (simple)
-        if (transform.scale > 1) {
-            const newConfig = { ...transform, x: newX, y: newY };
-            setTransform(newConfig);
-            if (onTransformChange) onTransformChange(newConfig);
+        pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        
+        const pointList = Array.from(pointers.current.values()) as {x: number, y: number}[];
+        if (pointList.length === 0) return;
+
+        const { center, dist } = getMetrics(pointList);
+        const start = interactionStart.current;
+
+        let newScale = transform.scale;
+        let newX = transform.x;
+        let newY = transform.y;
+
+        // 1. PINCH (Scale)
+        if (pointList.length >= 2 && start.dist > 0) {
+             const scaleChange = dist / start.dist;
+             newScale = Math.min(Math.max(1, start.scale * scaleChange), 8); // Increased max zoom
         }
+
+        // 2. PAN (Move)
+        const dx = center.x - start.center.x;
+        const dy = center.y - start.center.y;
+        
+        // Apply pan if zoomed or if multi-touch or dragging single touch
+        // Allow free movement
+        newX = start.x + dx;
+        newY = start.y + dy;
+
+        const config = { x: newX, y: newY, scale: newScale };
+        setTransform(config);
+        if (onTransformChange) onTransformChange(config);
     };
 
     const handlePointerUp = (e: React.PointerEvent) => {
-        isDragging.current = false;
-        e.currentTarget.releasePointerCapture(e.pointerId);
+        if (containerRef.current) containerRef.current.releasePointerCapture(e.pointerId);
+        pointers.current.delete(e.pointerId);
+        
+        if (pointers.current.size === 0) {
+            setIsDragging(false);
+        }
+
+        // Reset baseline to prevent jumping if switching from 2 fingers to 1
+        if (pointers.current.size > 0) {
+            const pointList = Array.from(pointers.current.values()) as {x: number, y: number}[];
+            const { center, dist } = getMetrics(pointList);
+            interactionStart.current = {
+                scale: transform.scale,
+                x: transform.x,
+                y: transform.y,
+                dist: dist,
+                center: center
+            };
+        }
+    };
+
+    const handleWheel = (e: React.WheelEvent) => {
+        e.stopPropagation();
+        const scaleAmount = -(e.deltaY) * 0.001;
+        const newScale = Math.min(Math.max(1, transform.scale + scaleAmount), 8);
+        
+        const config = { ...transform, scale: newScale };
+        // Reset position if completely zoomed out
+        if (newScale === 1) {
+            config.x = 0;
+            config.y = 0;
+        }
+        setTransform(config);
+        if (onTransformChange) onTransformChange(config);
     };
 
     return (
         <div 
             ref={containerRef}
-            className="w-full h-full overflow-hidden flex items-center justify-center bg-black cursor-move touch-none relative group"
+            className={`w-full h-full overflow-hidden flex items-center justify-center bg-black relative touch-none select-none ${isDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
+            style={{ touchAction: 'none' }}
             onWheel={handleWheel}
             onPointerDown={handlePointerDown}
             onPointerMove={handlePointerMove}
             onPointerUp={handlePointerUp}
+            onPointerCancel={handlePointerUp}
             onPointerLeave={handlePointerUp}
         >
-            <img 
+             <img 
                 src={src} 
                 alt={alt}
-                className="max-w-none max-h-none transition-transform duration-75 ease-linear will-change-transform select-none"
+                className="max-w-none max-h-none will-change-transform select-none pointer-events-none"
                 style={{
                     transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})`,
                     height: '100%',
@@ -263,7 +354,7 @@ export const WeatherCard: React.FC<WeatherCardProps> = ({
     image, 
     loading, 
     onScroll, 
-    onEdit,
+    onUpdateImage,
     onRefresh,
     isExpanded = true, 
     onToggleExpand,
@@ -288,6 +379,8 @@ export const WeatherCard: React.FC<WeatherCardProps> = ({
   } | null>(null);
 
   const [showFullImage, setShowFullImage] = useState(false);
+  const [showAdjustInput, setShowAdjustInput] = useState(false);
+  const [adjustPrompt, setAdjustPrompt] = useState("");
   const [showNewsModal, setShowNewsModal] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [hasScrolledDown, setHasScrolledDown] = useState(false);
@@ -296,8 +389,13 @@ export const WeatherCard: React.FC<WeatherCardProps> = ({
   const [dragOffset, setDragOffset] = useState<number>(0);
   const [isDismissing, setIsDismissing] = useState(false);
 
-  // New state for tracking image view changes
+  // View Config
   const [currentViewConfig, setCurrentViewConfig] = useState<ViewConfig | undefined>(image.viewConfig);
+  
+  // Local Edit History State
+  const [history, setHistory] = useState<GeneratedImage[]>([]);
+  const [historyIndex, setHistoryIndex] = useState(0);
+  const [isEditing, setIsEditing] = useState(false);
 
   // --- Conversions ---
   const toF = (c: number) => Math.round((c * 9/5) + 32);
@@ -321,6 +419,22 @@ export const WeatherCard: React.FC<WeatherCardProps> = ({
   useEffect(() => {
       setCurrentViewConfig(image.viewConfig);
   }, [image.viewConfig]);
+
+  // Initialize history when full view opens
+  useEffect(() => {
+      if (showFullImage) {
+          // If history is empty, initialize with current image
+          if (history.length === 0) {
+              setHistory([image]);
+              setHistoryIndex(0);
+          }
+      } else {
+          // Reset history on close
+          setHistory([]);
+          setHistoryIndex(0);
+          setIsEditing(false);
+      }
+  }, [showFullImage]);
 
   const onTouchStart = (e: React.TouchEvent) => {
     if (isDismissing) return;
@@ -371,21 +485,56 @@ export const WeatherCard: React.FC<WeatherCardProps> = ({
     }
   };
 
+  // Determine currently active image
+  const activeImage = history.length > 0 ? history[historyIndex] : image;
+
   const handleDownload = (e: React.MouseEvent) => {
     e.stopPropagation();
     const link = document.createElement('a');
-    link.href = image.url;
+    link.href = activeImage.url;
     link.download = `isoweather-${weather.city.replace(/\s+/g, '-').toLowerCase()}-${Date.now()}.png`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
   };
 
-  const handleSetView = (e: React.MouseEvent) => {
-      e.stopPropagation();
-      if (onUpdateView && currentViewConfig) {
-          onUpdateView(currentViewConfig);
-          setShowFullImage(false);
+  const handleCloseFullImage = () => {
+    // 1. Commit View Config (Pan/Zoom)
+    if (onUpdateView && currentViewConfig) {
+        onUpdateView(currentViewConfig);
+    }
+    
+    // 2. Commit the CURRENTLY SELECTED image from history
+    if (activeImage && activeImage.url !== image.url && onUpdateImage) {
+        onUpdateImage(activeImage);
+    }
+
+    setShowFullImage(false);
+    setShowAdjustInput(false);
+  };
+
+  const handleSubmitAdjust = async () => {
+      if (adjustPrompt.trim()) {
+          setIsEditing(true);
+          setShowAdjustInput(false);
+          try {
+              // Edit based on current active image
+              const baseImage = activeImage;
+              const newImage = await editWeatherScene(baseImage.base64, adjustPrompt);
+              
+              // Add to history, removing any future redo states
+              const newHistory = history.slice(0, historyIndex + 1);
+              newHistory.push(newImage);
+              
+              setHistory(newHistory);
+              setHistoryIndex(newHistory.length - 1);
+          } catch (e) {
+              console.error("Failed to edit locally", e);
+              // In a real app, show a toast or error
+          } finally {
+              setIsEditing(false);
+              setAdjustPrompt("");
+          }
       }
   };
 
@@ -691,68 +840,44 @@ export const WeatherCard: React.FC<WeatherCardProps> = ({
       setSelectedMetric(data);
   };
 
-  const handleDailyClick = (day: any) => {
-    const isMetric = unit === 'C';
-    // Filter hourly data for this specific day
-    const dayHours = weather.allHourly.filter(h => h.rawTime.startsWith(day.rawDate));
-    
-    if (dayHours.length === 0) {
-        // Fallback for missing data
-        setSelectedMetric({
-            title: day.fullDate,
-            value: `${isMetric ? day.max : toF(day.max)}°`,
-            subValue: "No hourly data",
-            description: "Detailed hourly data is not available for this date.",
-            icon: getWeatherIcon(day.code, "w-6 h-6"),
-            insights: [],
-            chart: null
-        });
-        return;
-    }
+  const handleDailyClick = (day: DailyForecast) => {
+      const isMetric = unit === 'C';
+      const max = isMetric ? day.max : toF(day.max);
+      const min = isMetric ? day.min : toF(day.min);
+      const rain = isMetric ? day.rainSum : toInches(day.rainSum);
+      const rainUnit = isMetric ? 'mm' : 'in';
+      
+      // Filter hourly data for this day. 
+      // rawDate is YYYY-MM-DD. rawTime is ISO string.
+      const dayHourly = weather.allHourly.filter(h => h.rawTime.startsWith(day.rawDate));
+      
+      const chart = dayHourly.length > 0 ? (
+          <AreaChart 
+              data={dayHourly.map(h => isMetric ? h.temp : toF(h.temp))} 
+              labels={dayHourly.map(h => h.time)} 
+              color="#f97316" 
+              unit="°" 
+          />
+      ) : (
+          <div className="text-zinc-500 text-sm text-center py-8">Hourly forecast not available for this date</div>
+      );
 
-    const labels = dayHours.map(h => h.time);
-    const tempData = dayHours.map(h => isMetric ? h.temp : toF(h.temp));
-    const precipData = dayHours.map(h => isMetric ? h.precipitation : toInches(h.precipitation));
-    const precipUnit = isMetric ? 'mm' : 'in';
-
-    setSelectedMetric({
-        title: day.fullDate,
-        value: `${isMetric ? day.max : toF(day.max)}°`,
-        subValue: `Low: ${isMetric ? day.min : toF(day.min)}°`,
-        description: `Forecast for ${day.fullDate}. Expect conditions to range from ${isMetric ? day.min : toF(day.min)}° to ${isMetric ? day.max : toF(day.max)}°.`,
-        icon: getWeatherIcon(day.code, "w-6 h-6"),
-        insights: [
-            { label: "Precipitation", text: `${isMetric ? day.rainSum : toInches(day.rainSum)} ${precipUnit} expected total.` },
-            { label: "UV Index", text: `Max UV Index: ${day.uvIndex}` }
-        ],
-        chart: (
-            <div className="space-y-4">
-                <div>
-                     <div className="flex items-center gap-2 mb-1 text-zinc-500 text-[10px] font-bold uppercase">Temperature</div>
-                     <AreaChart 
-                        data={tempData} 
-                        labels={labels} 
-                        color="#f97316" 
-                        unit="°" 
-                     />
-                </div>
-                {day.rainSum > 0 && (
-                    <div className="pt-2 border-t border-zinc-800">
-                        <div className="flex items-center gap-2 mb-1 text-zinc-500 text-[10px] font-bold uppercase mt-2">Precipitation ({precipUnit})</div>
-                        <BarChart 
-                             data={precipData} 
-                             labels={labels} 
-                             color="#3b82f6" 
-                             unit={precipUnit}
-                        />
-                    </div>
-                )}
-            </div>
-        )
-    });
+      setSelectedMetric({
+          title: day.fullDate,
+          value: `${max}°`,
+          subValue: `/ ${min}°`,
+          description: `Forecast for ${day.date}: High of ${max}° and low of ${min}°. ${day.rainSum > 0 ? `Expected precipitation: ${rain} ${rainUnit}.` : 'No significant precipitation expected.'}`,
+          icon: getWeatherIcon(day.code, "w-6 h-6"),
+          insights: [
+              { label: "Condition", text: mapWmoCode(day.code) },
+              { label: "UV Index", text: `Max UV: ${day.uvIndex}` },
+              { label: "Daylight", text: `Sunrise: ${day.sunrise} • Sunset: ${day.sunset}` }
+          ],
+          chart: chart
+      });
   };
 
-  const generatedDate = image.generatedAt ? new Date(image.generatedAt) : new Date();
+  const generatedDate = activeImage.generatedAt ? new Date(activeImage.generatedAt) : new Date();
   const timeSinceGeneration = new Date().getTime() - generatedDate.getTime();
   const isOutdated = timeSinceGeneration > 4 * 60 * 60 * 1000; 
   const formattedTime = generatedDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -771,78 +896,124 @@ export const WeatherCard: React.FC<WeatherCardProps> = ({
     {showFullImage && (
         <div 
             className="fixed inset-0 z-[100] bg-black flex items-center justify-center animate-in fade-in duration-300"
-            onClick={() => setShowFullImage(false)}
+            // Ensure clicking background DOES NOT close the view. Only Save closes it.
         >
             <button 
-                className="absolute top-6 right-6 p-2 bg-black/40 backdrop-blur-md rounded-full text-white hover:bg-white/20 transition-colors z-50 border border-white/10"
-                onClick={() => setShowFullImage(false)}
+                className="absolute top-6 right-6 px-6 py-3 bg-zinc-100 hover:bg-white text-black rounded-full font-bold transition-all z-50 shadow-[0_0_20px_rgba(255,255,255,0.2)] flex items-center gap-2 hover:scale-105 active:scale-95"
+                onClick={(e) => { e.stopPropagation(); handleCloseFullImage(); }}
+                title="Save & Close"
             >
-                <X className="w-8 h-8" />
+                <Check className="w-5 h-5" />
+                <span>Save</span>
             </button>
             
-            {/* Interactive Pan/Zoom Image */}
+            {/* Interactive Pan/Zoom Image with updated multi-touch support */}
             <PanZoomImage 
-                src={image.url} 
+                src={activeImage.url} 
                 alt={`Full view of ${weather.city}`} 
                 initialConfig={image.viewConfig}
                 onTransformChange={setCurrentViewConfig}
             />
-
-            <div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-50 max-w-[90vw] pointer-events-auto flex items-center gap-2">
-                
-                {/* Wallpaper Button */}
-                <div className="relative group">
-                    <button 
-                        onClick={handleDownload}
-                        className="p-2.5 bg-zinc-800/50 hover:bg-zinc-700 text-zinc-200 hover:text-white rounded-full transition-all hover:scale-105 active:scale-95 border border-transparent hover:border-white/10"
-                        aria-label="Download Wallpaper"
+            
+            {isEditing && (
+                <div className="absolute inset-0 z-40 flex flex-col items-center justify-center bg-black/60 backdrop-blur-sm">
+                    <Loader2 className="w-12 h-12 text-purple-400 animate-spin mb-4" />
+                    <span className="text-white font-bold text-lg">Redrawing Scene...</span>
+                </div>
+            )}
+            
+            {/* Adjust Scene Popup Dialog */}
+            {showAdjustInput ? (
+                <div 
+                    className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-6"
+                    onClick={(e) => { e.stopPropagation(); setShowAdjustInput(false); }}
+                >
+                    <div 
+                        className="bg-zinc-900/90 border border-zinc-700 p-6 rounded-3xl w-full max-w-sm shadow-2xl animate-in zoom-in-95 duration-200"
+                        onClick={(e) => e.stopPropagation()}
                     >
-                        <Download className="w-4 h-4" />
-                    </button>
-                    {/* Tooltip */}
-                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-3 px-2 py-1 bg-zinc-900 text-white text-[10px] font-bold uppercase tracking-wide rounded opacity-0 group-hover:opacity-100 transition-all pointer-events-none border border-white/10 shadow-xl whitespace-nowrap z-50">
-                        Download 4K Wallpaper
-                        <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-2 h-2 bg-zinc-900 rotate-45 border-b border-r border-white/10"></div>
+                         <h3 className="text-lg font-bold text-white mb-2 flex items-center gap-2">
+                             <Sparkles className="w-5 h-5 text-purple-400" />
+                             Adjust Scene
+                         </h3>
+                         <p className="text-sm text-zinc-400 mb-4">Describe what you want to change (e.g. "Add snow", "Make it night", "Add a dragon").</p>
+                         
+                         <textarea 
+                             className="w-full bg-black/40 border border-zinc-700 rounded-xl p-3 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-purple-500/50 resize-none h-24 mb-4 text-sm font-medium"
+                             placeholder="Enter instructions..."
+                             value={adjustPrompt}
+                             onChange={(e) => setAdjustPrompt(e.target.value)}
+                             autoFocus
+                         />
+                         
+                         <div className="flex gap-3">
+                             <button 
+                                 onClick={() => setShowAdjustInput(false)}
+                                 className="flex-1 py-2.5 rounded-full font-bold text-sm text-zinc-400 hover:bg-white/5 transition-colors"
+                             >
+                                 Cancel
+                             </button>
+                             <button 
+                                 onClick={handleSubmitAdjust}
+                                 className="flex-1 py-2.5 rounded-full font-bold text-sm bg-purple-600 text-white hover:bg-purple-500 transition-colors shadow-lg shadow-purple-900/20"
+                             >
+                                 Generate Preview
+                             </button>
+                         </div>
                     </div>
                 </div>
-
-                {/* Crop Button (Set View) */}
-                {onUpdateView && (
-                     <div className="relative group">
-                        <button 
-                            onClick={handleSetView}
-                            className="p-2.5 bg-zinc-800/50 hover:bg-zinc-700 text-zinc-200 hover:text-white rounded-full transition-all hover:scale-105 active:scale-95 border border-transparent hover:border-white/10"
-                            aria-label="Crop"
-                        >
-                            <Crop className="w-4 h-4" />
-                        </button>
-                        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-3 px-2 py-1 bg-zinc-900 text-white text-[10px] font-bold uppercase tracking-wide rounded opacity-0 group-hover:opacity-100 transition-all pointer-events-none border border-white/10 shadow-xl whitespace-nowrap z-50">
-                            Crop
-                            <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-2 h-2 bg-zinc-900 rotate-45 border-b border-r border-white/10"></div>
-                        </div>
-                    </div>
-                )}
-
-                {/* Divider */}
-                <div className="w-px h-6 bg-white/10 mx-1" />
-
-                {/* Adjust Button */}
-                {onEdit && (
+            ) : (
+                <div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-50 max-w-[90vw] pointer-events-auto flex items-center gap-2">
+                    
+                    {/* Wallpaper Button */}
                     <div className="relative group">
                         <button 
-                            onClick={(e) => { e.stopPropagation(); setShowFullImage(false); onEdit(); }}
-                            className="flex items-center gap-2 px-4 py-2 bg-zinc-800/50 text-zinc-200 hover:bg-zinc-700 hover:text-white rounded-full transition-all hover:scale-105 active:scale-95 font-bold text-xs border border-transparent hover:border-white/10"
+                            onClick={handleDownload}
+                            className="p-3 bg-zinc-800/50 hover:bg-zinc-700 text-zinc-200 hover:text-white rounded-full transition-all hover:scale-105 active:scale-95 border border-transparent hover:border-white/10"
+                            aria-label="Download Wallpaper"
                         >
-                            <Sparkles className="w-5 h-5 text-purple-400" />
-                            <span>Adjust Scene</span>
+                            <Download className="w-5 h-5" />
                         </button>
-                        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-3 px-2 py-1 bg-zinc-900 text-white text-[10px] font-bold uppercase tracking-wide rounded opacity-0 group-hover:opacity-100 transition-all pointer-events-none border border-white/10 shadow-xl whitespace-nowrap z-50">
-                            Edit Prompt & Regenerate
-                            <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-2 h-2 bg-zinc-900 rotate-45 border-b border-r border-white/10"></div>
-                        </div>
                     </div>
-                )}
-            </div>
+
+                    {/* Divider */}
+                    <div className="w-px h-6 bg-white/10 mx-1" />
+
+                    {/* History Navigation - Only visible if history exists */}
+                    {history.length > 1 && (
+                        <div className="flex items-center gap-2 bg-zinc-900/80 backdrop-blur-md rounded-full p-1.5 border border-white/10">
+                            <button 
+                                disabled={historyIndex === 0} 
+                                onClick={() => setHistoryIndex(i => i-1)}
+                                className="p-2 text-zinc-400 hover:text-white disabled:opacity-30 disabled:hover:text-zinc-400 transition-colors"
+                            > 
+                                <ChevronLeft className="w-5 h-5" /> 
+                            </button>
+                            <div className="w-px h-4 bg-white/10" />
+                            <button 
+                                disabled={historyIndex === history.length - 1} 
+                                onClick={() => setHistoryIndex(i => i+1)}
+                                className="p-2 text-zinc-400 hover:text-white disabled:opacity-30 disabled:hover:text-zinc-400 transition-colors"
+                            > 
+                                <ChevronRight className="w-5 h-5" /> 
+                            </button>
+                        </div>
+                    )}
+
+                    {/* Adjust Button */}
+                    {onUpdateImage && (
+                        <div className="relative group">
+                            <button 
+                                onClick={(e) => { e.stopPropagation(); setShowAdjustInput(true); }}
+                                className="flex items-center gap-2 px-5 py-3 bg-zinc-800/50 text-zinc-200 hover:bg-zinc-700 hover:text-white rounded-full transition-all hover:scale-105 active:scale-95 font-bold text-sm border border-transparent hover:border-white/10"
+                            >
+                                <Sparkles className="w-5 h-5 text-purple-400" />
+                                <span>Adjust Scene</span>
+                            </button>
+                        </div>
+                    )}
+                </div>
+            )}
         </div>
     )}
 
@@ -928,7 +1099,7 @@ export const WeatherCard: React.FC<WeatherCardProps> = ({
              >
                 <div className="absolute inset-0 z-0 bg-zinc-900 overflow-hidden">
                     <img 
-                        src={image.url} 
+                        src={activeImage.url} 
                         alt={`Weather in ${weather.city}`} 
                         className={`w-full h-full transition-all duration-1000 ${loading ? 'scale-110 blur-sm grayscale-[30%]' : 'scale-100 blur-0'}`}
                         style={{
@@ -937,20 +1108,13 @@ export const WeatherCard: React.FC<WeatherCardProps> = ({
                         }}
                     />
                     <div className="absolute inset-0 bg-gradient-to-b from-black/50 via-transparent to-black/80 pointer-events-none" />
-                    
-                    {/* Maximize Icon hint on hover when expanded */}
-                    {isExpanded && (
-                        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity bg-black/30 p-4 rounded-full backdrop-blur-sm pointer-events-none">
-                            <Maximize className="w-8 h-8 text-white/80" />
-                        </div>
-                    )}
                 </div>
 
                 {/* Top Section */}
                 <div className="absolute top-0 left-0 right-0 pt-20 px-8 pb-8 z-10 text-white pointer-events-none">
                     <h1 className="text-4xl font-black tracking-tighter drop-shadow-lg leading-tight">{weather.nativeCity}</h1>
                     {weather.nativeCity !== weather.city && (
-                        <p className="text-lg font-medium opacity-80 drop-shadow-md">{weather.city}</p>
+                        <p className="text-xl font-medium opacity-80 drop-shadow-md">{weather.city}</p>
                     )}
                     {/* Hide country/universe line for fictional cities if requested */}
                     {!weather.isFictional && (
@@ -974,7 +1138,7 @@ export const WeatherCard: React.FC<WeatherCardProps> = ({
 
                     <div className="flex items-end justify-between">
                         <div>
-                            <div className="text-7xl font-black tracking-tighter drop-shadow-xl leading-none">
+                            <div className="text-6xl font-black tracking-tighter drop-shadow-xl leading-none">
                                 {displayTemp}°{unit}
                             </div>
                             <div className="text-xl font-medium mt-2 drop-shadow-md flex items-center gap-2">

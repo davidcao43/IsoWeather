@@ -5,9 +5,9 @@ import { WeatherCard } from './components/WeatherCard';
 import { EditInput } from './components/EditInput';
 import { LoadingScreen } from './components/LoadingScreen';
 import { FantasyCreator } from './components/FantasyCreator';
-import { generateWeatherScene, editWeatherScene, getCityNativeName, generateHomeBackground, generateFantasyScene, generateCreativeWeatherData, regenerateFantasyScene } from './services/geminiService';
+import { generateWeatherScene, getCityNativeName, generateHomeBackground, generateFantasyScene, generateCreativeWeatherData, regenerateFantasyScene } from './services/geminiService';
 import { getWeatherData } from './services/weatherService';
-import { AppState, WeatherCardData, LocationData, FantasyConfig, ViewConfig } from './types';
+import { AppState, WeatherCardData, LocationData, FantasyConfig, ViewConfig, GeneratedImage } from './types';
 import { AlertCircle, Layers, Sparkles, Wand2 } from 'lucide-react';
 
 const SWIPE_THRESHOLD = 100;
@@ -35,7 +35,7 @@ const App: React.FC = () => {
   const [previewDragOffset, setPreviewDragOffset] = useState(0); // Track drag to animate search bar
   const [expandedCardId, setExpandedCardId] = useState<string | null>(null);
   const [refreshingCardId, setRefreshingCardId] = useState<string | null>(null);
-  const [showEdit, setShowEdit] = useState(false);
+  // Remove unused showEdit
   const [showFantasy, setShowFantasy] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string>("");
   const [isScrolled, setIsScrolled] = useState(false);
@@ -185,7 +185,6 @@ const App: React.FC = () => {
     // Always show loading state first for feedback
     setState(AppState.FETCHING_WEATHER);
     setErrorMsg("");
-    setShowEdit(false);
     setIsScrolled(false);
     setPreviewCard(null);
     setPreviewDragOffset(0);
@@ -288,29 +287,19 @@ const App: React.FC = () => {
     }
   };
 
-  const handleEdit = async (prompt: string) => {
-    let targetCard = previewCard;
-    if (!targetCard && expandedCardId) {
-        targetCard = savedCards.find(c => c.weather.id === expandedCardId) || null;
-    }
-    if (!targetCard) return;
+  const handleImageUpdate = (newImage: GeneratedImage) => {
+      let targetCard = previewCard;
+      if (!targetCard && expandedCardId) {
+          targetCard = savedCards.find(c => c.weather.id === expandedCardId) || null;
+      }
+      if (!targetCard) return;
 
-    setState(AppState.EDITING_IMAGE);
-    try {
-      const editedImage = await editWeatherScene(targetCard.image.base64, prompt);
-      const updatedCard = { ...targetCard, image: editedImage };
+      const updatedCard = { ...targetCard, image: newImage };
       if (previewCard) {
           setPreviewCard(updatedCard);
       } else if (expandedCardId) {
           setSavedCards(savedCards.map(c => c.weather.id === expandedCardId ? updatedCard : c));
       }
-      setState(AppState.SUCCESS);
-      setShowEdit(false);
-    } catch (err: any) {
-      setErrorMsg("Failed to edit image.");
-      setState(AppState.SUCCESS);
-      setShowEdit(false);
-    }
   };
 
   const handleUpdateView = (viewConfig: ViewConfig) => {
@@ -387,8 +376,8 @@ const App: React.FC = () => {
       </div>
 
       {/* Global Loading Overlay (Covers Search Bar) */}
-      {(state === AppState.FETCHING_WEATHER || state === AppState.GENERATING_IMAGE || state === AppState.EDITING_IMAGE) && (
-        <LoadingScreen message={state === AppState.FETCHING_WEATHER ? "Processing location data..." : (state === AppState.EDITING_IMAGE ? "Redrawing scene..." : "Constructing simulation...")} />
+      {(state === AppState.FETCHING_WEATHER || state === AppState.GENERATING_IMAGE) && (
+        <LoadingScreen message={state === AppState.FETCHING_WEATHER ? "Processing location data..." : "Constructing simulation..."} />
       )}
 
       {/* Search & Header */}
@@ -541,7 +530,7 @@ const App: React.FC = () => {
                    loading={refreshingCardId === expandedCard.weather.id}
                    isExpanded={true}
                    onToggleExpand={() => setExpandedCardId(null)}
-                   onEdit={() => setShowEdit(true)}
+                   onUpdateImage={handleImageUpdate}
                    onRefresh={() => handleRefresh(expandedCard)}
                    onScroll={setIsScrolled}
                    onUpdateView={handleUpdateView}
@@ -562,21 +551,13 @@ const App: React.FC = () => {
                   onToggleExpand={() => { setPreviewCard(null); setPreviewDragOffset(0); }}
                   onScroll={setIsScrolled}
                   onRefresh={() => handleRefresh(previewCard)}
-                  onEdit={() => setShowEdit(true)} 
+                  onUpdateImage={handleImageUpdate}
                   isPreview={true}
                   onSave={() => handleSavePreview()}
                   onDrag={(offset) => setPreviewDragOffset(offset)}
                   onUpdateView={handleUpdateView}
               />
           </div>
-      )}
-
-      {showEdit && (
-          <EditInput 
-            onEdit={handleEdit} 
-            onCancel={() => setShowEdit(false)} 
-            isProcessing={state === AppState.EDITING_IMAGE}
-          />
       )}
 
       {showFantasy && (

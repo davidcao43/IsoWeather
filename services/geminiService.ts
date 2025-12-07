@@ -427,16 +427,47 @@ export const generateWeatherScene = async (weather: WeatherData): Promise<Genera
 };
 
 export const editWeatherScene = async (base64Image: string, instructions: string): Promise<GeneratedImage> => {
-    // PLACEHOLDER MODE: Disabled Nano Banana for edits.
-    
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    const ai = getClient();
+    // UPGRADED to Pro for better instruction following (Nano Banana Pro)
+    const modelId = "gemini-3-pro-image-preview";
 
-    const url = `https://placehold.co/1080x1920/7c3aed/fff.png?text=${encodeURIComponent("Edited: " + instructions)}&font=montserrat`;
+    try {
+        const response = await ai.models.generateContent({
+            model: modelId,
+            contents: {
+                parts: [
+                    { text: instructions },
+                    { inlineData: { mimeType: 'image/png', data: base64Image } },
+                ],
+            },
+            config: {
+                imageConfig: { 
+                    aspectRatio: "9:16",
+                    imageSize: "4K" // Ensure 4K resolution for edits
+                } 
+            }
+        });
 
-    return {
-        url,
-        base64: "",
-        prompt: instructions,
-        generatedAt: new Date().toISOString()
-    };
+        let newBase64 = '';
+        if (response.candidates?.[0]?.content?.parts) {
+            for (const part of response.candidates[0].content.parts) {
+                if (part.inlineData) {
+                    newBase64 = part.inlineData.data;
+                    break;
+                }
+            }
+        }
+
+        if (!newBase64) throw new Error("No edited image generated.");
+        
+        return {
+            url: `data:image/png;base64,${newBase64}`,
+            base64: newBase64,
+            prompt: instructions,
+            generatedAt: new Date().toISOString()
+        };
+    } catch (error) {
+        console.error("Failed to edit scene", error);
+        throw error;
+    }
 };
